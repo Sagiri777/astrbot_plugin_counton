@@ -1,0 +1,37 @@
+{
+  "detect_mode": {
+    "description": "离开消息识别模式",
+    "type": "string",
+    "options": [
+      "regex",
+      "ai",
+      "both"
+    ],
+    "hint": "regex: 仅正则实时识别；ai: 仅 AI 批量识别；both: 两者同时启用。",
+    "default": "both"
+  },
+  "regex_patterns": {
+    "description": "离开消息正则（每行一个）",
+    "type": "string",
+    "hint": "留空使用内置规则。示例：^我去一趟厕所$",
+    "default": ""
+  },
+  "ai_trigger_text_count": {
+    "description": "AI 触发文本条数",
+    "type": "int",
+    "hint": "累计到该条数后触发一次 AI 批量识别。",
+    "default": 15
+  },
+  "ai_trigger_minutes": {
+    "description": "AI 触发时间（分钟）",
+    "type": "int",
+    "hint": "从首条缓存文本开始计时，到达该分钟数后触发 AI 批量识别。",
+    "default": 30
+  },
+  "batch_loop_interval_seconds": {
+    "description": "AI 批处理循环间隔（秒）",
+    "type": "int",
+    "hint": "检查是否到达时间触发条件的轮询间隔。",
+    "default": 5
+  }
+}

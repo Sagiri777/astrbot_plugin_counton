@@ -1,14 +1,42 @@
-# astrbot-plugin-helloworld
+# astrbot-plugin-counton
 
-AstrBot 插件模板 / A template plugin for AstrBot plugin feature
+Count temporary leave messages in group chats and welcome users when they come back.
 
-> [!NOTE]
-> This repo is just a template of [AstrBot](https://github.com/AstrBotDevs/AstrBot) Plugin.
-> 
-> [AstrBot](https://github.com/AstrBotDevs/AstrBot) is an agentic assistant for both personal and group conversations. It can be deployed across dozens of mainstream instant messaging platforms, including QQ, Telegram, Feishu, DingTalk, Slack, LINE, Discord, Matrix, etc. In addition, it provides a reliable and extensible conversational AI infrastructure for individuals, developers, and teams. Whether you need a personal AI companion, an intelligent customer support agent, an automation assistant, or an enterprise knowledge base, AstrBot enables you to quickly build AI applications directly within your existing messaging workflows.
+## Features
 
-# Supports
+- Detect temporary leave intent messages, such as:
+  - 我去一趟厕所
+  - 我去洗个澡
+  - 先洗个澡
+- Track leave duration per user in each group session.
+- When the same user sends the next message, treat it as returning:
+  - quote the leave message
+  - send a welcome text with reason and duration
+- Two leave detection methods:
+  - Regex real-time detection
+  - AI batch detection
 
-- [AstrBot Repo](https://github.com/AstrBotDevs/AstrBot)
-- [AstrBot Plugin Development Docs (Chinese)](https://docs.astrbot.app/dev/star/plugin-new.html)
-- [AstrBot Plugin Development Docs (English)](https://docs.astrbot.app/en/dev/star/plugin-new.html)
+## AI batch behavior
+
+AI detection will **not** call the model for every message.
+It buffers plain-text messages and triggers one classification request when either condition is met:
+
+- buffered message count reaches `ai_trigger_text_count` (default: 15)
+- elapsed time reaches `ai_trigger_minutes` (default: 30)
+
+Whichever comes first triggers the request.
+
+## Config
+
+Use `_conf_schema.json` options:
+
+- `detect_mode`: `regex` / `ai` / `both`
+- `regex_patterns`: one regex per line, empty means built-in patterns
+- `ai_trigger_text_count`: AI batch count threshold
+- `ai_trigger_minutes`: AI batch time threshold in minutes
+- `batch_loop_interval_seconds`: polling interval for time-based triggering
+
+## Notes
+
+- This plugin only handles **group text messages**.
+- In `both` mode, regex detects immediately, AI acts as a supplemental detector.
