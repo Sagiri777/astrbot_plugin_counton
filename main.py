@@ -7,12 +7,12 @@ import time
 from dataclasses import dataclass
 from typing import Any
 
-from astrbot.api import logger
+from astrbot.api import AstrBotConfig, logger
 from astrbot.api.event import AstrMessageEvent, MessageEventResult, filter
 from astrbot.api.message_components import Plain, Reply
 from astrbot.api.platform import MessageType
 from astrbot.api.provider import Provider
-from astrbot.api.star import AstrBotConfig, Context, Star, register
+from astrbot.api.star import Context, Star, register
 
 
 @dataclass(slots=True)
