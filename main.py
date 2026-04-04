@@ -13,6 +13,7 @@ from astrbot.api.message_components import Plain, Reply
 from astrbot.api.platform import MessageType
 from astrbot.api.provider import Provider
 from astrbot.api.star import Context, Star, register
+from astrbot.core import sp
 
 
 @dataclass(slots=True)
@@ -23,6 +24,7 @@ class AwayRecord:
     leave_text: str
     leave_message_id: str
     leave_timestamp: float
+    return_message_id: str = ""
 
 
 @dataclass(slots=True)
@@ -42,9 +44,14 @@ class PendingTextMessage:
     "1.0.0",
 )
 class CountOnPlugin(Star):
+    _TEMP_CACHE_KEY = "_counton_away_records"
     _DEFAULT_REGEX_PATTERNS = [
-        r"^我\s*(?:先)?去(?:\s*.+)?$",
-        r"^先\s*去(?:\s*.+)?$",
+        r"^先\s*(?:去|出|离|忙|洗|吃|上|回|拿|接|开|办|处|补|收|看|打|冲|做|睡)\S*(?:\s*.+)?$",
+        r"^我\s*先\s*(?:去|出|离|忙|洗|吃|上|回|拿|接|开|办|处|补|收|看|打|冲|做|睡)\S*(?:\s*.+)?$",
+        r"^我\s*要\s*(?:去|出|离|忙|洗|吃|上|回|拿|接|开|办|处|补|收|看|打|冲|做|睡)\S*(?:\s*.+)?$",
+        r"^我\s*现在\s*(?:去|出|离|忙|洗|吃|上|回|拿|接|开|办|处|补|收|看|打|冲|做|睡)\S*(?:\s*.+)?$",
+        r"^(?:等会|等会儿|一会|一会儿|回头)\s*(?:再来|回来)(?:\s*.+)?[。！!]*$",
+        r"^(?:我\s*)?(?:先\s*)?(?:去|出|离|忙|洗|吃|上|回|拿|接|开|办|处|补|收|看|打|冲|做|睡)\S*(?:\s*.+)?了(?:\s*一下)?(?:吧)?[。！!]*$",
         r"^(?:我)?(?:暂时|先)离开(?:一下)?(?:吧)?[。！!]*$",
     ]
 
@@ -106,6 +113,8 @@ class CountOnPlugin(Star):
             away_map = self._away_by_session.get(session_key, {})
             if sender_id in away_map:
                 return_record = away_map.pop(sender_id)
+                return_record.return_message_id = message_id
+                self._delete_temp_away_record(session_key, sender_id)
 
             if self._detect_mode() in {"ai", "both"}:
                 pending = self._pending_by_session.setdefault(session_key, [])
@@ -131,7 +140,7 @@ class CountOnPlugin(Star):
                 async with self._lock:
                     session_away = self._away_by_session.setdefault(session_key, {})
                     if sender_id not in session_away:
-                        session_away[sender_id] = AwayRecord(
+                        record = AwayRecord(
                             sender_id=sender_id,
                             sender_name=sender_name,
                             reason=reason,
@@ -139,6 +148,8 @@ class CountOnPlugin(Star):
                             leave_message_id=message_id,
                             leave_timestamp=message_timestamp,
                         )
+                        session_away[sender_id] = record
+                        self._save_temp_away_record(session_key, record)
 
         if should_flush_ai:
             await self._flush_ai_for_session(session_key)
@@ -309,7 +320,7 @@ class CountOnPlugin(Star):
                 if msg.sender_id in away_map:
                     continue
 
-                away_map[msg.sender_id] = AwayRecord(
+                record = AwayRecord(
                     sender_id=msg.sender_id,
                     sender_name=msg.sender_name,
                     reason=reason or self._guess_reason_from_text(msg.text),
@@ -317,6 +328,8 @@ class CountOnPlugin(Star):
                     leave_message_id=msg.message_id,
                     leave_timestamp=msg.message_timestamp,
                 )
+                away_map[msg.sender_id] = record
+                self._save_temp_away_record(session_key, record)
 
     async def _detect_away_messages_with_ai(
         self,
@@ -336,7 +349,7 @@ class CountOnPlugin(Star):
 
         prompt = (
             "你是一个群聊消息分类器。请从消息中识别“用户表达暂时离开，稍后回来”的消息。"
-            "\n识别标准：例如“我去一趟厕所”“我去洗个澡”“先洗个澡”“我先离开一下”。"
+            "\n识别标准：例如“我去一趟厕所”“我要去吃饭”“我现在去洗个澡”“我先忙一下”“我先洗澡了”“等会再来”。"
             "\n不要把普通聊天、长期离开、告别、下线、睡觉到明天等消息当作暂时离开。"
             "\n\n请只输出 JSON，不要输出额外文字。格式："
             '{"aways":[{"message_id":"...","reason":"..."}]}'
@@ -402,10 +415,23 @@ class CountOnPlugin(Star):
         text = f"欢迎回来，{record.sender_name}！你因为“{record.reason}”离开了 {duration}。"
 
         result = MessageEventResult()
-        if record.leave_message_id:
-            result.chain.append(Reply(id=record.leave_message_id))
+        reply_target_id = ""
+        quote_target = self._quote_target()
+        if quote_target == "return":
+            reply_target_id = record.return_message_id
+        else:
+            reply_target_id = record.leave_message_id
+
+        if reply_target_id:
+            result.chain.append(Reply(id=reply_target_id))
         result.message(text)
         return result
+
+    def _quote_target(self) -> str:
+        target = str(self._cfg("quote_target", "return")).strip().lower()
+        if target in {"leave", "return"}:
+            return target
+        return "return"
 
     def _format_duration(self, seconds: int) -> str:
         if seconds < 60:
@@ -415,3 +441,31 @@ class CountOnPlugin(Star):
             return f"{minutes} 分 {sec} 秒"
         hours, mins = divmod(minutes, 60)
         return f"{hours} 小时 {mins} 分"
+
+    def _get_temp_away_store(self) -> dict[str, dict[str, dict[str, str | float]]]:
+        store = sp.temporary_cache.setdefault(self._TEMP_CACHE_KEY, {})
+        if not isinstance(store, dict):
+            store = {}
+            sp.temporary_cache[self._TEMP_CACHE_KEY] = store
+        return store
+
+    def _save_temp_away_record(self, session_key: str, record: AwayRecord) -> None:
+        session_store = self._get_temp_away_store().setdefault(session_key, {})
+        session_store[record.sender_id] = {
+            "sender_id": record.sender_id,
+            "sender_name": record.sender_name,
+            "reason": record.reason,
+            "leave_text": record.leave_text,
+            "leave_message_id": record.leave_message_id,
+            "leave_timestamp": record.leave_timestamp,
+        }
+
+    def _delete_temp_away_record(self, session_key: str, sender_id: str) -> None:
+        store = self._get_temp_away_store()
+        session_store = store.get(session_key)
+        if not isinstance(session_store, dict):
+            return
+
+        session_store.pop(sender_id, None)
+        if not session_store:
+            store.pop(session_key, None)

@@ -16,6 +16,16 @@
     "hint": "留空使用内置规则。示例：^我去一趟厕所$",
     "default": ""
   },
+  "quote_target": {
+    "description": "欢迎消息引用目标",
+    "type": "string",
+    "options": [
+      "leave",
+      "return"
+    ],
+    "hint": "leave: 引用离开时的消息；return: 引用返回时的消息。",
+    "default": "return"
+  },
   "ai_trigger_text_count": {
     "description": "AI 触发文本条数",
     "type": "int",
