@@ -50,11 +50,37 @@
     "hint": "累计到该条数后触发一次 AI 批量识别。",
     "default": 15
   },
+  "ai_provider_id": {
+    "description": "AI 使用的框架模型提供商",
+    "type": "string",
+    "_special": "select_provider",
+    "hint": "留空时跟随当前会话使用的提供商；填写后，离开识别和 AI 欢迎语都会优先使用该提供商。",
+    "default": ""
+  },
+  "ai_model": {
+    "description": "AI 使用的模型名称",
+    "type": "string",
+    "hint": "留空时使用所选提供商当前模型；填写后，将覆盖插件内 AI 调用所使用的模型。",
+    "default": ""
+  },
   "ai_trigger_minutes": {
     "description": "AI 触发时间（分钟）",
     "type": "int",
     "hint": "从首条缓存文本开始计时，到达该分钟数后触发 AI 批量识别。",
     "default": 30
+  },
+  "ai_welcome_enabled": {
+    "description": "是否启用 AI 生成欢迎消息",
+    "type": "bool",
+    "hint": "关闭时使用固定欢迎文案；开启后会调用模型生成欢迎回来消息。",
+    "default": false
+  },
+  "welcome_persona_id": {
+    "description": "欢迎消息使用的人设",
+    "type": "string",
+    "_special": "select_persona",
+    "hint": "仅在启用 AI 欢迎消息时生效，只作用于欢迎回来消息，不影响离开识别。",
+    "default": ""
   },
   "batch_loop_interval_seconds": {
     "description": "AI 批处理循环间隔（秒）",

@@ -12,7 +12,7 @@ from astrbot.api import AstrBotConfig, logger
 from astrbot.api.event import AstrMessageEvent, MessageEventResult, filter
 from astrbot.api.message_components import At, Plain, Reply
 from astrbot.api.platform import MessageType
-from astrbot.api.provider import Provider
+from astrbot.api.provider import Personality, Provider
 from astrbot.api.star import Context, Star
 from astrbot.core import sp
 
@@ -176,7 +176,7 @@ class MyPlugin(Star):
                 )
 
         if return_record and not suppress_welcome:
-            yield self._build_welcome_result(return_record)
+            yield await self._build_welcome_result(session_key, return_record)
             return
         if return_record:
             logger.info(
@@ -281,6 +281,21 @@ class MyPlugin(Star):
         except (TypeError, ValueError):
             value = 6
         return max(1, min(value, 100))
+
+    def _ai_provider_id(self) -> str:
+        return str(self._cfg("ai_provider_id", "")).strip()
+
+    def _ai_model(self) -> str:
+        return str(self._cfg("ai_model", "")).strip()
+
+    def _ai_welcome_enabled(self) -> bool:
+        value = self._cfg("ai_welcome_enabled", False)
+        if isinstance(value, bool):
+            return value
+        return str(value).strip().lower() in {"1", "true", "yes", "on"}
+
+    def _welcome_persona_id(self) -> str:
+        return str(self._cfg("welcome_persona_id", "")).strip()
 
     def _track_recent_message(self, session_key: str, timestamp: float) -> None:
         recent = self._recent_message_timestamps_by_session.setdefault(
@@ -393,13 +408,13 @@ class MyPlugin(Star):
         raw_args = command_match.group(1) if command_match else args_str
         tokens = [token for token in re.split(r"\s+", raw_args.strip()) if token]
         if not tokens:
-            yield event.plain_result(
-                "用法：/counton leave 原因 | 留言，/counton back"
-            )
+            yield event.plain_result("用法：/counton leave 原因 | 留言，/counton back")
             return
 
         subcommand = tokens[0].lower()
-        remaining = raw_args.strip()[len(tokens[0]) :].strip() if raw_args.strip() else ""
+        remaining = (
+            raw_args.strip()[len(tokens[0]) :].strip() if raw_args.strip() else ""
+        )
 
         if subcommand in {"leave", "away", "afk", "离开", "请假"}:
             reason, note = self._parse_private_leave_payload(remaining)
@@ -506,7 +521,7 @@ class MyPlugin(Star):
                 return
             self._pending_by_session[session_key] = []
 
-        provider = self.context.get_using_provider(umo=session_key)
+        provider = self._resolve_ai_provider(session_key)
         if not provider or not isinstance(provider, Provider):
             logger.warning(
                 "[counton] no chat provider for session %s, skip AI detection",
@@ -514,11 +529,13 @@ class MyPlugin(Star):
             )
             return
 
-        identified = await self._detect_away_messages_with_ai(provider, pending)
+        identified = await self._detect_away_messages_with_ai(
+            provider,
+            pending,
+            model=self._ai_model() or None,
+        )
         if not identified:
             return
-
-        by_message_id = {msg.message_id: msg for msg in pending if msg.message_id}
 
         async with self._lock:
             latest_map = self._latest_msg_id_by_session_sender.setdefault(
@@ -527,18 +544,18 @@ class MyPlugin(Star):
             away_map = self._away_by_session.setdefault(session_key, {})
 
             for item in identified:
-                message_id = str(item.get("message_id", "")).strip()
+                index = item.get("index")
                 reason = str(item.get("reason", "")).strip()
-                if not message_id:
+                if not isinstance(index, int):
                     continue
 
-                msg = by_message_id.get(message_id)
-                if not msg:
+                if index < 1 or index > len(pending):
                     continue
+                msg = pending[index - 1]
 
                 # Ignore stale candidates. If user has already sent a newer message,
                 # the leave intent is no longer valid.
-                if latest_map.get(msg.sender_id) != message_id:
+                if latest_map.get(msg.sender_id) != msg.message_id:
                     continue
 
                 if msg.sender_id in away_map:
@@ -560,16 +577,10 @@ class MyPlugin(Star):
         self,
         provider: Provider,
         pending: list[PendingTextMessage],
-    ) -> list[dict[str, str]]:
-        lines = []
-        for msg in pending:
-            if not msg.message_id:
-                continue
-            lines.append(
-                f"- message_id={msg.message_id}; sender={msg.sender_name}; text={msg.text}"
-            )
-
-        if not lines:
+        model: str | None = None,
+    ) -> list[dict[str, Any]]:
+        indexed_messages = self._build_indexed_messages(pending)
+        if not indexed_messages:
             return []
 
         prompt = (
@@ -577,37 +588,213 @@ class MyPlugin(Star):
             "\n识别标准：例如“我去一趟厕所”“我要去吃饭”“我现在去洗个澡”“我先忙一下”“我先洗澡了”“等会再来”。"
             "\n不要把普通聊天、长期离开、告别、下线、睡觉到明天等消息当作暂时离开。"
             "\n\n请只输出 JSON，不要输出额外文字。格式："
-            '{"aways":[{"message_id":"...","reason":"..."}]}'
-            "\n其中 reason 是简短离开原因（如：洗澡、上厕所、接电话）。"
-            "\n\n以下是待分类消息：\n" + "\n".join(lines)
+            '{"aways":[{"index":1,"reason":"..."}]}'
+            "\n其中 index 是消息序号，reason 是简短离开原因（如：洗澡、上厕所、接电话）。"
+            '\n如果没有符合条件的消息，请输出：{"aways":[]}'
+            "\n\n以下是待分类消息：\n" + self._format_indexed_messages(indexed_messages)
         )
 
         try:
-            response = await provider.text_chat(prompt=prompt)
+            response = await provider.text_chat(prompt=prompt, model=model)
             content = response.completion_text or ""
         except Exception as exc:  # noqa: BLE001
             logger.warning("[counton] AI classify failed: %s", exc)
             return []
 
+        parsed = self._parse_indexed_away_response(content)
+        if parsed is not None:
+            return parsed
+
+        logger.warning(
+            "[counton] AI classify response unparseable, fallback to split mode"
+        )
+        return await self._detect_away_messages_with_ai_fallback(
+            provider,
+            indexed_messages,
+            model=model,
+        )
+
+    def _build_indexed_messages(
+        self,
+        pending: list[PendingTextMessage],
+    ) -> list[tuple[int, PendingTextMessage]]:
+        indexed_messages: list[tuple[int, PendingTextMessage]] = []
+        for index, msg in enumerate(pending, start=1):
+            if not msg.message_id:
+                continue
+            indexed_messages.append((index, msg))
+        return indexed_messages
+
+    def _format_indexed_messages(
+        self,
+        indexed_messages: list[tuple[int, PendingTextMessage]],
+    ) -> str:
+        return "\n".join(
+            f"- index={index}; sender={msg.sender_name}; text={msg.text}"
+            for index, msg in indexed_messages
+        )
+
+    def _parse_indexed_away_response(self, content: str) -> list[dict[str, Any]] | None:
         data = self._try_parse_json(content)
         if not isinstance(data, dict):
-            return []
+            return None
 
         away_items = data.get("aways", [])
         if not isinstance(away_items, list):
-            return []
+            return None
 
-        cleaned: list[dict[str, str]] = []
+        cleaned: list[dict[str, Any]] = []
         for item in away_items:
             if not isinstance(item, dict):
                 continue
-            message_id = str(item.get("message_id", "")).strip()
+            raw_index = item.get("index")
             reason = str(item.get("reason", "")).strip()
-            if not message_id:
+            try:
+                index = int(raw_index)
+            except (TypeError, ValueError):
                 continue
-            cleaned.append({"message_id": message_id, "reason": reason})
-
+            cleaned.append({"index": index, "reason": reason})
         return cleaned
+
+    async def _detect_away_messages_with_ai_fallback(
+        self,
+        provider: Provider,
+        indexed_messages: list[tuple[int, PendingTextMessage]],
+        model: str | None = None,
+    ) -> list[dict[str, Any]]:
+        if not indexed_messages:
+            return []
+
+        return await self._detect_away_messages_in_block(
+            provider,
+            indexed_messages,
+            model=model,
+        )
+
+    async def _detect_away_messages_in_block(
+        self,
+        provider: Provider,
+        indexed_messages: list[tuple[int, PendingTextMessage]],
+        model: str | None = None,
+    ) -> list[dict[str, Any]]:
+        if not indexed_messages:
+            return []
+
+        if len(indexed_messages) == 1:
+            index, msg = indexed_messages[0]
+            reason = await self._ask_message_reason_or_false(
+                provider,
+                index,
+                msg,
+                model=model,
+            )
+            if not reason:
+                return []
+            return [{"index": index, "reason": reason}]
+
+        block_reason = await self._ask_block_reason_or_false(
+            provider,
+            indexed_messages,
+            model=model,
+        )
+        if not block_reason:
+            return []
+
+        if len(indexed_messages) <= 7:
+            results: list[dict[str, Any]] = []
+            for index, msg in indexed_messages:
+                reason = await self._ask_message_reason_or_false(
+                    provider,
+                    index,
+                    msg,
+                    model=model,
+                )
+                if reason:
+                    results.append({"index": index, "reason": reason})
+            return results
+
+        results: list[dict[str, Any]] = []
+        for chunk in self._split_evenly(indexed_messages):
+            results.extend(
+                await self._detect_away_messages_in_block(
+                    provider,
+                    chunk,
+                    model=model,
+                )
+            )
+        return results
+
+    def _split_evenly(
+        self,
+        indexed_messages: list[tuple[int, PendingTextMessage]],
+    ) -> list[list[tuple[int, PendingTextMessage]]]:
+        if len(indexed_messages) <= 1:
+            return [indexed_messages]
+        mid = len(indexed_messages) // 2
+        return [indexed_messages[:mid], indexed_messages[mid:]]
+
+    async def _ask_block_reason_or_false(
+        self,
+        provider: Provider,
+        indexed_messages: list[tuple[int, PendingTextMessage]],
+        model: str | None = None,
+    ) -> str | None:
+        prompt = (
+            "你是一个群聊消息分类器。请判断下面这一组消息里，是否至少有一条表达了“用户暂时离开，稍后回来”。"
+            "\n识别标准：例如“我去一趟厕所”“我要去吃饭”“我现在去洗个澡”“我先忙一下”“等会再来”。"
+            "\n不要把普通聊天、长期离开、告别、下线、睡觉到明天等消息算进去。"
+            "\n如果有，请只回答一个简短离开原因。"
+            "\n如果没有，请只回答 False。"
+            "\n不要输出任何额外文字。"
+            "\n\n消息如下：\n" + self._format_indexed_messages(indexed_messages)
+        )
+        return await self._ask_reason_or_false(provider, prompt, model=model)
+
+    async def _ask_message_reason_or_false(
+        self,
+        provider: Provider,
+        index: int,
+        msg: PendingTextMessage,
+        model: str | None = None,
+    ) -> str | None:
+        prompt = (
+            "你是一个群聊消息分类器。请判断下面这条消息是否表达了“用户暂时离开，稍后回来”。"
+            "\n识别标准：例如“我去一趟厕所”“我要去吃饭”“我现在去洗个澡”“我先忙一下”“等会再来”。"
+            "\n不要把普通聊天、长期离开、告别、下线、睡觉到明天等消息算进去。"
+            "\n如果是，请只回答简短离开原因。"
+            "\n如果不是，请只回答 False。"
+            "\n不要输出任何额外文字。"
+            "\n\n消息如下：\n"
+            f"- index={index}; sender={msg.sender_name}; text={msg.text}"
+        )
+        return await self._ask_reason_or_false(provider, prompt, model=model)
+
+    async def _ask_reason_or_false(
+        self,
+        provider: Provider,
+        prompt: str,
+        model: str | None = None,
+    ) -> str | None:
+        try:
+            response = await provider.text_chat(prompt=prompt, model=model)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("[counton] AI fallback classify failed: %s", exc)
+            return None
+
+        content = (response.completion_text or "").strip()
+        if not content:
+            return None
+
+        normalized = re.sub(r"\s+", " ", content).strip().strip("。")
+        if normalized.lower() == "false":
+            return None
+
+        if normalized.startswith('"') and normalized.endswith('"'):
+            normalized = normalized[1:-1].strip()
+
+        if normalized.lower() == "false":
+            return None
+        return normalized[:32] if normalized else None
 
     def _try_parse_json(self, content: str) -> dict[str, Any] | None:
         text = content.strip()
@@ -633,13 +820,88 @@ class MyPlugin(Star):
             return None
         return None
 
-    def _build_welcome_result(self, record: AwayRecord) -> MessageEventResult:
+    def _resolve_ai_provider(self, session_key: str) -> Provider | None:
+        provider_id = self._ai_provider_id()
+        if provider_id:
+            provider = self.context.get_provider_by_id(provider_id)
+            if provider and isinstance(provider, Provider):
+                return provider
+            logger.warning(
+                "[counton] configured ai provider %s not found, fallback to session provider",
+                provider_id,
+            )
+        return self.context.get_using_provider(umo=session_key)
+
+    def _resolve_welcome_persona(self) -> Personality | None:
+        persona_id = self._welcome_persona_id()
+        if not persona_id:
+            return None
+        persona = self.context.persona_manager.get_persona_v3_by_id(persona_id)
+        if persona is None:
+            logger.warning(
+                "[counton] configured welcome persona %s not found, ignore it",
+                persona_id,
+            )
+        return persona
+
+    async def _render_welcome_text(
+        self,
+        session_key: str,
+        record: AwayRecord,
+        duration: str,
+    ) -> str:
+        fallback = f"欢迎回来，{record.sender_name}！你因为“{record.reason}”离开了 {duration}。"
+        if record.note:
+            fallback += f"\n离开留言：{record.note}"
+
+        if not self._ai_welcome_enabled():
+            return fallback
+
+        provider = self._resolve_ai_provider(session_key)
+        if not provider:
+            return fallback
+
+        persona = self._resolve_welcome_persona()
+        system_prompt = ""
+        if persona and persona.get("prompt"):
+            system_prompt = str(persona["prompt"]).strip()
+
+        prompt = (
+            "请生成一条简短自然的欢迎回来消息。"
+            "\n要求："
+            "\n1. 使用中文。"
+            "\n2. 语气友好，控制在 1-2 句。"
+            "\n3. 必须包含用户昵称、离开原因和离开时长。"
+            "\n4. 如果有留言，自然带上；如果没有，不要编造。"
+            "\n5. 不要添加多余解释、标题或引号。"
+            f"\n\n用户昵称：{record.sender_name}"
+            f"\n离开原因：{record.reason}"
+            f"\n离开时长：{duration}"
+            f"\n离开留言：{record.note or '无'}"
+        )
+
+        try:
+            response = await provider.text_chat(
+                prompt=prompt,
+                system_prompt=system_prompt or None,
+                model=self._ai_model() or None,
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("[counton] AI welcome generation failed: %s", exc)
+            return fallback
+
+        content = (response.completion_text or "").strip()
+        return content or fallback
+
+    async def _build_welcome_result(
+        self,
+        session_key: str,
+        record: AwayRecord,
+    ) -> MessageEventResult:
         duration = self._format_duration(
             max(0, int(time.time() - record.leave_timestamp))
         )
-        text = f"欢迎回来，{record.sender_name}！你因为“{record.reason}”离开了 {duration}。"
-        if record.note:
-            text += f"\n离开留言：{record.note}"
+        text = await self._render_welcome_text(session_key, record, duration)
 
         result = MessageEventResult()
         reply_target_id = ""
@@ -738,14 +1000,23 @@ class MyPlugin(Star):
 
     def _is_return_command(self, text: str) -> bool:
         normalized = text.strip().lower()
-        return normalized in {"回来", "我回来了", "取消离开", "结束离开", "back", "return"}
+        return normalized in {
+            "回来",
+            "我回来了",
+            "取消离开",
+            "结束离开",
+            "back",
+            "return",
+        }
 
     def _parse_private_leave_payload(self, text: str) -> tuple[str, str]:
         normalized = text.strip()
         if not normalized:
             return "", ""
 
-        normalized = re.sub(r"^(?:我(?:要)?|我要先|我先)?(?:去|离开|请假)\s*", "", normalized)
+        normalized = re.sub(
+            r"^(?:我(?:要)?|我要先|我先)?(?:去|离开|请假)\s*", "", normalized
+        )
         separator_match = re.split(r"\s*[|｜]\s*", normalized, maxsplit=1)
         if len(separator_match) == 2:
             reason = separator_match[0].strip()
