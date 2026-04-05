@@ -26,6 +26,12 @@
     "hint": "leave: 引用离开时的消息；return: 引用返回时的消息。",
     "default": "return"
   },
+  "return_grace_period_seconds": {
+    "description": "返回消息忽略时长（秒）",
+    "type": "int",
+    "hint": "距离离开消息不足该秒数的后续消息，不计为返回消息。",
+    "default": 45
+  },
   "send_welcome_in_high_frequency_chat": {
     "description": "高频聊天时是否发送欢迎消息",
     "type": "bool",

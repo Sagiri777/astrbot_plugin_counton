@@ -14,7 +14,7 @@
   - 我先忙一下
   - 等会再来
 - 按群聊维度记录每位用户的离开时长。
-- 当同一用户下一次再次发言时，视为“回来”：
+- 当同一用户在离开一段时间后再次发言时，视为“回来”：
   - 可引用离开时的消息或回来时的消息
   - 发送包含离开原因和时长的欢迎消息
 - 支持两种离开识别方式：
@@ -38,6 +38,7 @@ AI 模式不会为每一条消息单独调用模型。
 - `detect_mode`：识别模式，可选 `regex` / `ai` / `both`
 - `regex_patterns`：离开消息正则，每行一条，留空时使用内置规则
 - `quote_target`：欢迎消息引用目标，可选 `leave` / `return`，默认 `return`
+- `return_grace_period_seconds`：距离离开消息多少秒内的后续消息不计为返回消息，默认 `45`
 - `send_welcome_in_high_frequency_chat`：群聊处于高频聊天时，是否仍发送欢迎消息
 - `high_frequency_messages_per_second`：高频聊天判定阈值，按最近 1 秒内消息条数计算
 - `ai_trigger_text_count`：AI 批量识别触发消息条数
@@ -48,4 +49,5 @@ AI 模式不会为每一条消息单独调用模型。
 
 - 当前仅处理**群聊文本消息**。
 - 在 `both` 模式下，正则会立即识别，AI 作为补充识别手段。
+- 当用户发出离开消息后，只有超过 `return_grace_period_seconds` 的后续消息才会被当作“返回”。
 - 当 `send_welcome_in_high_frequency_chat=false` 且群聊最近 1 秒内消息数达到 `high_frequency_messages_per_second` 时，会跳过这次“欢迎回来”发送。

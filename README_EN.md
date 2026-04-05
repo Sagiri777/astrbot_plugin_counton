@@ -12,7 +12,7 @@ Count temporary leave messages in group chats and welcome users when they come b
   - 我先忙一下
   - 等会再来
 - Track leave duration per user in each group session.
-- When the same user sends the next message, treat it as returning:
+- When the same user speaks again after being away for a while, treat it as returning:
   - quote the leave message or the return message
   - send a welcome text with reason and duration
 - Two leave detection methods:
@@ -36,6 +36,7 @@ Use `_conf_schema.json` options:
 - `detect_mode`: `regex` / `ai` / `both`
 - `regex_patterns`: one regex per line, empty means built-in patterns
 - `quote_target`: `leave` / `return`, defaults to `return`
+- `return_grace_period_seconds`: follow-up messages sent within this many seconds after the leave message are not counted as a return, defaults to `45`
 - `send_welcome_in_high_frequency_chat`: whether to still send the welcome message when the group is in a high-frequency chat burst
 - `high_frequency_messages_per_second`: high-frequency threshold based on how many messages arrived in the last 1 second
 - `ai_trigger_text_count`: AI batch count threshold
@@ -46,3 +47,4 @@ Use `_conf_schema.json` options:
 
 - This plugin only handles group text messages.
 - In `both` mode, regex detects immediately, AI acts as a supplemental detector.
+- After a leave message is recorded, only follow-up messages sent later than `return_grace_period_seconds` will be treated as a return.

@@ -113,15 +113,19 @@ class MyPlugin(Star):
             self._touch_latest_message(session_key, sender_id, message_id)
             self._track_recent_message(session_key, time.time())
 
-            # Any next message from the same sender means they are back.
+            # Only messages sent after the configured grace window count as "back".
             away_map = self._away_by_session.get(session_key, {})
             if sender_id in away_map:
-                return_record = away_map.pop(sender_id)
-                return_record.return_message_id = message_id
-                self._delete_temp_away_record(session_key, sender_id)
-                suppress_welcome = self._should_suppress_welcome_in_high_frequency_chat(
-                    session_key
-                )
+                candidate_record = away_map[sender_id]
+                if self._is_valid_return_message(candidate_record, message_timestamp):
+                    return_record = away_map.pop(sender_id)
+                    return_record.return_message_id = message_id
+                    self._delete_temp_away_record(session_key, sender_id)
+                    suppress_welcome = (
+                        self._should_suppress_welcome_in_high_frequency_chat(
+                            session_key
+                        )
+                    )
 
             if self._detect_mode() in {"ai", "both"}:
                 pending = self._pending_by_session.setdefault(session_key, [])
@@ -212,11 +216,26 @@ class MyPlugin(Star):
             value = 5
         return max(1, min(value, 120))
 
+    def _return_grace_period_seconds(self) -> int:
+        try:
+            value = int(self._cfg("return_grace_period_seconds", 45))
+        except (TypeError, ValueError):
+            value = 45
+        return max(0, min(value, 24 * 60 * 60))
+
     def _send_welcome_in_high_frequency_chat(self) -> bool:
         value = self._cfg("send_welcome_in_high_frequency_chat", True)
         if isinstance(value, bool):
             return value
         return str(value).strip().lower() not in {"0", "false", "no", "off"}
+
+    def _is_valid_return_message(
+        self, record: AwayRecord, message_timestamp: float
+    ) -> bool:
+        return (
+            message_timestamp - record.leave_timestamp
+            > self._return_grace_period_seconds()
+        )
 
     def _high_frequency_messages_per_second(self) -> int:
         try:
