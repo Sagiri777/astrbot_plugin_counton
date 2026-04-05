@@ -1,6 +1,6 @@
 name: counton
 display_name: counton
-desc: Track temporary leave and welcome users back in group chats.
-version: v1.0.0
-author: guozimier
-repo: https://github.com/AstrBotDevs/AstrBot
+desc: CountOn plugin
+version: v0.1.0
+author: Sagiri777
+repo: https://github.com/Sagiri777/astrbot_plugin_counton

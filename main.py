@@ -36,14 +36,8 @@ class PendingTextMessage:
     received_at: float
     message_timestamp: float
 
-
-@register(
-    "counton",
-    "guozimier",
-    "Track temporary leave-and-return messages in groups",
-    "1.0.0",
-)
-class CountOnPlugin(Star):
+@register("counton", "Sagiri777", "CountOn plugin", "0.1.0")
+class MyPlugin(Star):
     _TEMP_CACHE_KEY = "_counton_away_records"
     _DEFAULT_REGEX_PATTERNS = [
         r"^先\s*(?:去|出|离|忙|洗|吃|上|回|拿|接|开|办|处|补|收|看|打|冲|做|睡)\S*(?:\s*.+)?$",
