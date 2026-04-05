@@ -4,6 +4,7 @@ import asyncio
 import json
 import re
 import time
+from collections import deque
 from dataclasses import dataclass
 from typing import Any
 
@@ -39,13 +40,20 @@ class PendingTextMessage:
 class MyPlugin(Star):
     _TEMP_CACHE_KEY = "_counton_away_records"
     _DEFAULT_REGEX_PATTERNS = [
-        r"^先\s*(?:去|出|离|忙|洗|吃|上|回|拿|接|开|办|处|补|收|看|打|冲|做|睡)\S*(?:\s*.+)?$",
-        r"^我\s*先\s*(?:去|出|离|忙|洗|吃|上|回|拿|接|开|办|处|补|收|看|打|冲|做|睡)\S*(?:\s*.+)?$",
-        r"^我\s*要\s*(?:去|出|离|忙|洗|吃|上|回|拿|接|开|办|处|补|收|看|打|冲|做|睡)\S*(?:\s*.+)?$",
-        r"^我\s*现在\s*(?:去|出|离|忙|洗|吃|上|回|拿|接|开|办|处|补|收|看|打|冲|做|睡)\S*(?:\s*.+)?$",
-        r"^(?:等会|等会儿|一会|一会儿|回头)\s*(?:再来|回来)(?:\s*.+)?[。！!]*$",
-        r"^(?:我\s*)?(?:先\s*)?(?:去|出|离|忙|洗|吃|上|回|拿|接|开|办|处|补|收|看|打|冲|做|睡)\S*(?:\s*.+)?了(?:\s*一下)?(?:吧)?[。！!]*$",
-        r"^(?:我)?(?:暂时|先)离开(?:一下)?(?:吧)?[。！!]*$",
+        r"^我\s*去(?:\s*.+)?[。！!]*$",
+        r"^我\s*现在(?:\s*.+)?[。！!]*$",
+        r"^我\s*要\s*去(?:\s*.+)?[。！!]*$",
+        r"^我\s*先\s*去(?:\s*.+)?[。！!]*$",
+        r"^我\s*要\s*先(?:\s*.+)?[。！!]*$",
+        r"^我\s*先(?:\s*.+)?[。！!]*$",
+        r"^我\s*得(?:\s*.+)?[。！!]*$",
+        r"^我\s*得\s*去(?:\s*.+)?[。！!]*$",
+        r"^我\s*得\s*先(?:\s*.+)?[。！!]*$",
+        r"^我\s*准备\s*去(?:\s*.+)?[。！!]*$",
+        r"^我\s*出去(?:\s*.+)?[。！!]*$",
+        r"^我\s*先\s*出去(?:\s*.+)?[。！!]*$",
+        r"^我\s*离开(?:\s*.+)?[。！!]*$",
+        r"^我\s*先\s*离开(?:\s*.+)?[。！!]*$",
     ]
 
     def __init__(self, context: Context, config: AstrBotConfig | None = None) -> None:
@@ -58,6 +66,7 @@ class MyPlugin(Star):
         self._away_by_session: dict[str, dict[str, AwayRecord]] = {}
         self._pending_by_session: dict[str, list[PendingTextMessage]] = {}
         self._latest_msg_id_by_session_sender: dict[str, dict[str, str]] = {}
+        self._recent_message_timestamps_by_session: dict[str, deque[float]] = {}
 
     async def initialize(self) -> None:
         self._stop_event.clear()
@@ -98,9 +107,11 @@ class MyPlugin(Star):
 
         should_flush_ai = False
         return_record: AwayRecord | None = None
+        suppress_welcome = False
 
         async with self._lock:
             self._touch_latest_message(session_key, sender_id, message_id)
+            self._track_recent_message(session_key, time.time())
 
             # Any next message from the same sender means they are back.
             away_map = self._away_by_session.get(session_key, {})
@@ -108,6 +119,9 @@ class MyPlugin(Star):
                 return_record = away_map.pop(sender_id)
                 return_record.return_message_id = message_id
                 self._delete_temp_away_record(session_key, sender_id)
+                suppress_welcome = self._should_suppress_welcome_in_high_frequency_chat(
+                    session_key
+                )
 
             if self._detect_mode() in {"ai", "both"}:
                 pending = self._pending_by_session.setdefault(session_key, [])
@@ -123,8 +137,14 @@ class MyPlugin(Star):
                 )
                 should_flush_ai = len(pending) >= self._ai_trigger_text_count()
 
-        if return_record:
+        if return_record and not suppress_welcome:
             yield self._build_welcome_result(return_record)
+            return
+        if return_record:
+            logger.info(
+                "[counton] suppress welcome in high-frequency chat for session %s",
+                session_key,
+            )
             return
 
         if self._detect_mode() in {"regex", "both"}:
@@ -191,6 +211,42 @@ class MyPlugin(Star):
         except (TypeError, ValueError):
             value = 5
         return max(1, min(value, 120))
+
+    def _send_welcome_in_high_frequency_chat(self) -> bool:
+        value = self._cfg("send_welcome_in_high_frequency_chat", True)
+        if isinstance(value, bool):
+            return value
+        return str(value).strip().lower() not in {"0", "false", "no", "off"}
+
+    def _high_frequency_messages_per_second(self) -> int:
+        try:
+            value = int(self._cfg("high_frequency_messages_per_second", 6))
+        except (TypeError, ValueError):
+            value = 6
+        return max(1, min(value, 100))
+
+    def _track_recent_message(self, session_key: str, timestamp: float) -> None:
+        recent = self._recent_message_timestamps_by_session.setdefault(
+            session_key, deque()
+        )
+        recent.append(timestamp)
+        self._prune_recent_messages(recent, timestamp)
+
+    def _prune_recent_messages(self, recent: deque[float], now: float) -> None:
+        window_start = now - 1
+        while recent and recent[0] < window_start:
+            recent.popleft()
+
+    def _should_suppress_welcome_in_high_frequency_chat(self, session_key: str) -> bool:
+        if self._send_welcome_in_high_frequency_chat():
+            return False
+
+        now = time.time()
+        recent = self._recent_message_timestamps_by_session.setdefault(
+            session_key, deque()
+        )
+        self._prune_recent_messages(recent, now)
+        return len(recent) >= self._high_frequency_messages_per_second()
 
     def _compiled_patterns(self) -> list[re.Pattern[str]]:
         raw_patterns = self._cfg("regex_patterns", "")

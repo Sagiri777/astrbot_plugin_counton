@@ -8,7 +8,7 @@
       "both"
     ],
     "hint": "regex: 仅正则实时识别；ai: 仅 AI 批量识别；both: 两者同时启用。",
-    "default": "both"
+    "default": "regex"
   },
   "regex_patterns": {
     "description": "离开消息正则（每行一个）",
@@ -25,6 +25,18 @@
     ],
     "hint": "leave: 引用离开时的消息；return: 引用返回时的消息。",
     "default": "return"
+  },
+  "send_welcome_in_high_frequency_chat": {
+    "description": "高频聊天时是否发送欢迎消息",
+    "type": "bool",
+    "hint": "当群聊最近 1 秒内消息数达到阈值且有人回来时，是否仍发送欢迎消息。",
+    "default": true
+  },
+  "high_frequency_messages_per_second": {
+    "description": "高频聊天判定阈值（每秒消息数）",
+    "type": "int",
+    "hint": "群聊最近 1 秒内消息数达到该值时，视为高频聊天。",
+    "default": 6
   },
   "ai_trigger_text_count": {
     "description": "AI 触发文本条数",
