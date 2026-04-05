@@ -1,6 +1,6 @@
 # astrbot-plugin-counton
 
-Count temporary leave messages in group chats and welcome users when they come back.
+Count temporary leave messages in group chats, welcome users when they come back, and allow users to set an away status by DM.
 
 ## Features
 
@@ -12,9 +12,14 @@ Count temporary leave messages in group chats and welcome users when they come b
   - 我先忙一下
   - 等会再来
 - Track leave duration per user in each group session.
+- Allow users to set away status and an optional note by sending a private message or a command.
+- When someone mentions an away user in a group, the plugin replies to that message with:
+  - away status
+  - away duration
+  - note, if present
 - When the same user speaks again after being away for a while, treat it as returning:
   - quote the leave message or the return message
-  - send a welcome text with reason and duration
+  - send a welcome text with reason, duration, and note
 - Two leave detection methods:
   - Regex real-time detection
   - AI batch detection
@@ -45,6 +50,13 @@ Use `_conf_schema.json` options:
 
 ## Notes
 
-- This plugin only handles group text messages.
+- Automatic leave detection still only applies to group text messages.
+- Private away setup examples:
+  - `eating`
+  - `eating | back later`
+  - multi-line input: first line is the reason, remaining lines become the note
+- Command examples:
+  - `/counton leave eating | back later`
+  - `/counton back`
 - In `both` mode, regex detects immediately, AI acts as a supplemental detector.
 - After a leave message is recorded, only follow-up messages sent later than `return_grace_period_seconds` will be treated as a return.

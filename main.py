@@ -10,10 +10,10 @@ from typing import Any
 
 from astrbot.api import AstrBotConfig, logger
 from astrbot.api.event import AstrMessageEvent, MessageEventResult, filter
-from astrbot.api.message_components import Plain, Reply
+from astrbot.api.message_components import At, Plain, Reply
 from astrbot.api.platform import MessageType
 from astrbot.api.provider import Provider
-from astrbot.api.star import Context, Star, register
+from astrbot.api.star import Context, Star
 from astrbot.core import sp
 
 
@@ -22,6 +22,7 @@ class AwayRecord:
     sender_id: str
     sender_name: str
     reason: str
+    note: str
     leave_text: str
     leave_message_id: str
     leave_timestamp: float
@@ -37,8 +38,10 @@ class PendingTextMessage:
     received_at: float
     message_timestamp: float
 
+
 class MyPlugin(Star):
     _TEMP_CACHE_KEY = "_counton_away_records"
+    _GLOBAL_AWAY_KEY_PREFIX = "__counton_global__:"
     _DEFAULT_REGEX_PATTERNS = [
         r"^我\s*去(?:\s*.+)?[。！!]*$",
         r"^我\s*现在(?:\s*.+)?[。！!]*$",
@@ -85,14 +88,23 @@ class MyPlugin(Star):
 
     @filter.platform_adapter_type(filter.PlatformAdapterType.ALL)
     async def on_message(self, event: AstrMessageEvent):
-        if event.get_message_type() != MessageType.GROUP_MESSAGE:
-            return
-
         text = self._extract_plain_text(event)
         if not text:
             return
 
+        message_type = event.get_message_type()
+        if message_type == MessageType.FRIEND_MESSAGE:
+            if self._looks_like_command(text):
+                return
+            result = await self._handle_private_away_message(event, text)
+            if result:
+                yield result
+            return
+        if message_type != MessageType.GROUP_MESSAGE:
+            return
+
         session_key = event.unified_msg_origin
+        global_session_key = self._global_session_key(event.get_platform_id())
         sender_id = event.get_sender_id().strip()
         if not sender_id:
             return
@@ -108,6 +120,7 @@ class MyPlugin(Star):
         should_flush_ai = False
         return_record: AwayRecord | None = None
         suppress_welcome = False
+        mention_records: list[AwayRecord] = []
 
         async with self._lock:
             self._touch_latest_message(session_key, sender_id, message_id)
@@ -121,6 +134,19 @@ class MyPlugin(Star):
                     return_record = away_map.pop(sender_id)
                     return_record.return_message_id = message_id
                     self._delete_temp_away_record(session_key, sender_id)
+                    suppress_welcome = (
+                        self._should_suppress_welcome_in_high_frequency_chat(
+                            session_key
+                        )
+                    )
+            elif sender_id in self._away_by_session.get(global_session_key, {}):
+                candidate_record = self._away_by_session[global_session_key][sender_id]
+                if self._is_valid_return_message(candidate_record, message_timestamp):
+                    return_record = self._away_by_session[global_session_key].pop(
+                        sender_id
+                    )
+                    return_record.return_message_id = message_id
+                    self._delete_temp_away_record(global_session_key, sender_id)
                     suppress_welcome = (
                         self._should_suppress_welcome_in_high_frequency_chat(
                             session_key
@@ -140,6 +166,14 @@ class MyPlugin(Star):
                     )
                 )
                 should_flush_ai = len(pending) >= self._ai_trigger_text_count()
+
+            mentioned_user_ids = self._extract_mentioned_user_ids(event)
+            if mentioned_user_ids:
+                mention_records = self._collect_away_records_for_mentions(
+                    session_key=session_key,
+                    global_session_key=global_session_key,
+                    mentioned_user_ids=mentioned_user_ids,
+                )
 
         if return_record and not suppress_welcome:
             yield self._build_welcome_result(return_record)
@@ -161,12 +195,16 @@ class MyPlugin(Star):
                             sender_id=sender_id,
                             sender_name=sender_name,
                             reason=reason,
+                            note="",
                             leave_text=text,
                             leave_message_id=message_id,
                             leave_timestamp=message_timestamp,
                         )
                         session_away[sender_id] = record
                         self._save_temp_away_record(session_key, record)
+
+        if mention_records:
+            yield self._build_away_notice_result(mention_records, message_id)
 
         if should_flush_ai:
             await self._flush_ai_for_session(session_key)
@@ -298,6 +336,124 @@ class MyPlugin(Star):
                 return reason or "暂时离开"
         return None
 
+    async def _handle_private_away_message(
+        self,
+        event: AstrMessageEvent,
+        text: str,
+    ) -> MessageEventResult | None:
+        sender_id = event.get_sender_id().strip()
+        if not sender_id:
+            return None
+
+        sender_name = event.get_sender_name().strip() or sender_id
+        message_id = str(getattr(event.message_obj, "message_id", "") or "").strip()
+        message_timestamp = self._extract_message_timestamp(event)
+        normalized = text.strip()
+
+        if self._is_return_command(normalized):
+            cleared = await self._clear_away_for_sender(
+                sender_id=sender_id,
+                platform_id=event.get_platform_id(),
+            )
+            if cleared:
+                return event.plain_result("已结束离开状态，欢迎回来。")
+            return event.plain_result("你当前没有处于离开状态。")
+
+        reason, note = self._parse_private_leave_payload(normalized)
+        if not reason:
+            return event.plain_result(
+                "请直接私信离开原因，或使用 /counton leave 原因 | 留言。"
+            )
+
+        record = AwayRecord(
+            sender_id=sender_id,
+            sender_name=sender_name,
+            reason=reason,
+            note=note,
+            leave_text=normalized,
+            leave_message_id=message_id,
+            leave_timestamp=message_timestamp,
+        )
+        global_session_key = self._global_session_key(event.get_platform_id())
+
+        async with self._lock:
+            self._away_by_session.setdefault(global_session_key, {})[sender_id] = record
+            self._save_temp_away_record(global_session_key, record)
+
+        response = f"已为你记录离开状态：{reason}"
+        if note:
+            response += f"\n留言：{note}"
+        response += "\n别人之后在群里 @ 你时，我会提醒对方。"
+        return event.plain_result(response)
+
+    @filter.command("counton")
+    async def counton_command(self, event: AstrMessageEvent, args_str: str = ""):
+        full_message = event.message_str or ""
+        command_match = re.match(r"^/?counton\s*(.*)", full_message, re.IGNORECASE)
+        raw_args = command_match.group(1) if command_match else args_str
+        tokens = [token for token in re.split(r"\s+", raw_args.strip()) if token]
+        if not tokens:
+            yield event.plain_result(
+                "用法：/counton leave 原因 | 留言，/counton back"
+            )
+            return
+
+        subcommand = tokens[0].lower()
+        remaining = raw_args.strip()[len(tokens[0]) :].strip() if raw_args.strip() else ""
+
+        if subcommand in {"leave", "away", "afk", "离开", "请假"}:
+            reason, note = self._parse_private_leave_payload(remaining)
+            if not reason:
+                yield event.plain_result(
+                    "请提供离开原因，例如：/counton leave 吃饭 | 晚点回。"
+                )
+                return
+
+            sender_id = event.get_sender_id().strip()
+            if not sender_id:
+                return
+
+            record = AwayRecord(
+                sender_id=sender_id,
+                sender_name=event.get_sender_name().strip() or sender_id,
+                reason=reason,
+                note=note,
+                leave_text=remaining or reason,
+                leave_message_id=str(
+                    getattr(event.message_obj, "message_id", "") or ""
+                ).strip(),
+                leave_timestamp=self._extract_message_timestamp(event),
+            )
+            global_session_key = self._global_session_key(event.get_platform_id())
+
+            async with self._lock:
+                self._away_by_session.setdefault(global_session_key, {})[sender_id] = (
+                    record
+                )
+                self._save_temp_away_record(global_session_key, record)
+
+            message = f"已记录离开状态：{reason}"
+            if note:
+                message += f"\n留言：{note}"
+            yield event.plain_result(message)
+            return
+
+        if subcommand in {"back", "return", "回来", "取消", "结束"}:
+            sender_id = event.get_sender_id().strip()
+            if not sender_id:
+                return
+            cleared = await self._clear_away_for_sender(
+                sender_id=sender_id,
+                platform_id=event.get_platform_id(),
+            )
+            if cleared:
+                yield event.plain_result("已结束离开状态。")
+            else:
+                yield event.plain_result("你当前没有处于离开状态。")
+            return
+
+        yield event.plain_result("用法：/counton leave 原因 | 留言，/counton back")
+
     def _guess_reason_from_text(self, text: str) -> str:
         normalized = re.sub(r"\s+", "", text)
         keywords = [
@@ -392,6 +548,7 @@ class MyPlugin(Star):
                     sender_id=msg.sender_id,
                     sender_name=msg.sender_name,
                     reason=reason or self._guess_reason_from_text(msg.text),
+                    note="",
                     leave_text=msg.text,
                     leave_message_id=msg.message_id,
                     leave_timestamp=msg.message_timestamp,
@@ -481,6 +638,8 @@ class MyPlugin(Star):
             max(0, int(time.time() - record.leave_timestamp))
         )
         text = f"欢迎回来，{record.sender_name}！你因为“{record.reason}”离开了 {duration}。"
+        if record.note:
+            text += f"\n离开留言：{record.note}"
 
         result = MessageEventResult()
         reply_target_id = ""
@@ -493,6 +652,31 @@ class MyPlugin(Star):
         if reply_target_id:
             result.chain.append(Reply(id=reply_target_id))
         result.message(text)
+        return result
+
+    def _build_away_notice_result(
+        self,
+        records: list[AwayRecord],
+        reply_target_id: str,
+    ) -> MessageEventResult:
+        result = MessageEventResult()
+        if reply_target_id:
+            result.chain.append(Reply(id=reply_target_id))
+
+        lines: list[str] = []
+        for record in records:
+            duration = self._format_duration(
+                max(0, int(time.time() - record.leave_timestamp))
+            )
+            line = (
+                f"{record.sender_name} 当前正处于离开状态，"
+                f"已离开 {duration}，原因：{record.reason}"
+            )
+            if record.note:
+                line += f"，留言：{record.note}"
+            lines.append(line + "。")
+
+        result.message("\n".join(lines))
         return result
 
     def _quote_target(self) -> str:
@@ -523,6 +707,7 @@ class MyPlugin(Star):
             "sender_id": record.sender_id,
             "sender_name": record.sender_name,
             "reason": record.reason,
+            "note": record.note,
             "leave_text": record.leave_text,
             "leave_message_id": record.leave_message_id,
             "leave_timestamp": record.leave_timestamp,
@@ -537,3 +722,91 @@ class MyPlugin(Star):
         session_store.pop(sender_id, None)
         if not session_store:
             store.pop(session_key, None)
+
+    def _extract_message_timestamp(self, event: AstrMessageEvent) -> float:
+        raw_ts = getattr(event.message_obj, "timestamp", 0)
+        try:
+            return float(raw_ts) if raw_ts else time.time()
+        except (TypeError, ValueError):
+            return time.time()
+
+    def _looks_like_command(self, text: str) -> bool:
+        stripped = text.strip()
+        if not stripped:
+            return False
+        return stripped.startswith(("/", "／"))
+
+    def _is_return_command(self, text: str) -> bool:
+        normalized = text.strip().lower()
+        return normalized in {"回来", "我回来了", "取消离开", "结束离开", "back", "return"}
+
+    def _parse_private_leave_payload(self, text: str) -> tuple[str, str]:
+        normalized = text.strip()
+        if not normalized:
+            return "", ""
+
+        normalized = re.sub(r"^(?:我(?:要)?|我要先|我先)?(?:去|离开|请假)\s*", "", normalized)
+        separator_match = re.split(r"\s*[|｜]\s*", normalized, maxsplit=1)
+        if len(separator_match) == 2:
+            reason = separator_match[0].strip()
+            note = separator_match[1].strip()
+            return reason, note
+
+        lines = [line.strip() for line in normalized.splitlines() if line.strip()]
+        if len(lines) >= 2:
+            return lines[0], " ".join(lines[1:])
+
+        return normalized, ""
+
+    def _global_session_key(self, platform_id: str) -> str:
+        return f"{self._GLOBAL_AWAY_KEY_PREFIX}{platform_id}"
+
+    def _extract_mentioned_user_ids(self, event: AstrMessageEvent) -> list[str]:
+        mentioned: list[str] = []
+        self_id = str(event.get_self_id()).strip()
+        for comp in event.get_messages():
+            if not isinstance(comp, At):
+                continue
+            target_id = str(comp.qq).strip()
+            if not target_id or target_id in {"all", self_id}:
+                continue
+            if target_id not in mentioned:
+                mentioned.append(target_id)
+        return mentioned
+
+    def _collect_away_records_for_mentions(
+        self,
+        session_key: str,
+        global_session_key: str,
+        mentioned_user_ids: list[str],
+    ) -> list[AwayRecord]:
+        records: list[AwayRecord] = []
+        session_away = self._away_by_session.get(session_key, {})
+        global_away = self._away_by_session.get(global_session_key, {})
+
+        for user_id in mentioned_user_ids:
+            record = session_away.get(user_id) or global_away.get(user_id)
+            if record:
+                records.append(record)
+        return records
+
+    async def _clear_away_for_sender(self, sender_id: str, platform_id: str) -> bool:
+        removed = False
+        global_session_key = self._global_session_key(platform_id)
+
+        async with self._lock:
+            for session_key, away_map in list(self._away_by_session.items()):
+                belongs_to_platform = (
+                    session_key == global_session_key
+                    or session_key.startswith(f"{platform_id}:")
+                )
+                if not belongs_to_platform or not away_map.get(sender_id):
+                    continue
+                if sender_id in away_map:
+                    away_map.pop(sender_id, None)
+                    self._delete_temp_away_record(session_key, sender_id)
+                    removed = True
+                if not away_map:
+                    self._away_by_session.pop(session_key, None)
+
+        return removed
