@@ -36,7 +36,6 @@ class PendingTextMessage:
     received_at: float
     message_timestamp: float
 
-@register("counton", "Sagiri777", "CountOn plugin", "0.1.0")
 class MyPlugin(Star):
     _TEMP_CACHE_KEY = "_counton_away_records"
     _DEFAULT_REGEX_PATTERNS = [
