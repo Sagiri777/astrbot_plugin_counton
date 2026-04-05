@@ -48,7 +48,6 @@ AI 模式不会为每一条消息单独调用模型。
 - `high_frequency_messages_per_second`：高频聊天判定阈值，按最近 1 秒内消息条数计算
 - `ai_trigger_text_count`：AI 批量识别触发消息条数
 - `ai_provider_id`：插件内部 AI 调用使用的框架提供商，留空时跟随当前会话
-- `ai_model`：插件内部 AI 调用使用的模型名，留空时使用提供商当前模型
 - `ai_trigger_minutes`：AI 批量识别触发时间阈值，单位分钟
 - `ai_welcome_enabled`：是否启用 AI 生成欢迎回来消息
 - `welcome_persona_id`：欢迎回来消息使用的人设，仅在启用 AI 欢迎消息时生效
@@ -65,7 +64,7 @@ AI 模式不会为每一条消息单独调用模型。
   - `/counton leave 吃饭 | 晚点回`
   - `/counton back`
 - 在 `both` 模式下，正则会立即识别，AI 作为补充识别手段。
-- `ai_provider_id` 和 `ai_model` 会同时作用于离开识别和 AI 欢迎语生成。
+- `ai_provider_id` 会同时作用于离开识别和 AI 欢迎语生成，并直接使用该提供商当前绑定的模型。
 - `welcome_persona_id` 只会注入到“欢迎回来”消息生成，不参与离开消息识别。
 - 当用户发出离开消息后，只有超过 `return_grace_period_seconds` 的后续消息才会被当作“返回”。
 - 当 `send_welcome_in_high_frequency_chat=false` 且群聊最近 1 秒内消息数达到 `high_frequency_messages_per_second` 时，会跳过这次“欢迎回来”发送。

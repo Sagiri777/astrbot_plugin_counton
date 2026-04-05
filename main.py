@@ -285,9 +285,6 @@ class MyPlugin(Star):
     def _ai_provider_id(self) -> str:
         return str(self._cfg("ai_provider_id", "")).strip()
 
-    def _ai_model(self) -> str:
-        return str(self._cfg("ai_model", "")).strip()
-
     def _ai_welcome_enabled(self) -> bool:
         value = self._cfg("ai_welcome_enabled", False)
         if isinstance(value, bool):
@@ -532,7 +529,6 @@ class MyPlugin(Star):
         identified = await self._detect_away_messages_with_ai(
             provider,
             pending,
-            model=self._ai_model() or None,
         )
         if not identified:
             return
@@ -884,7 +880,6 @@ class MyPlugin(Star):
             response = await provider.text_chat(
                 prompt=prompt,
                 system_prompt=system_prompt or None,
-                model=self._ai_model() or None,
             )
         except Exception as exc:  # noqa: BLE001
             logger.warning("[counton] AI welcome generation failed: %s", exc)

@@ -45,6 +45,9 @@ Use `_conf_schema.json` options:
 - `send_welcome_in_high_frequency_chat`: whether to still send the welcome message when the group is in a high-frequency chat burst
 - `high_frequency_messages_per_second`: high-frequency threshold based on how many messages arrived in the last 1 second
 - `ai_trigger_text_count`: AI batch count threshold
+- `ai_provider_id`: provider used by the plugin's AI calls, empty means follow the current session provider
+- `ai_welcome_enabled`: whether to use AI to generate the welcome-back message
+- `welcome_persona_id`: persona used for welcome-back generation only
 - `ai_trigger_minutes`: AI batch time threshold in minutes
 - `batch_loop_interval_seconds`: polling interval for time-based triggering
 
@@ -59,4 +62,5 @@ Use `_conf_schema.json` options:
   - `/counton leave eating | back later`
   - `/counton back`
 - In `both` mode, regex detects immediately, AI acts as a supplemental detector.
+- `ai_provider_id` applies to both leave detection and welcome generation, and uses the selected provider's current model directly.
 - After a leave message is recorded, only follow-up messages sent later than `return_grace_period_seconds` will be treated as a return.

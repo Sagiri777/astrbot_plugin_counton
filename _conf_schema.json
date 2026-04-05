@@ -57,12 +57,6 @@
     "hint": "留空时跟随当前会话使用的提供商；填写后，离开识别和 AI 欢迎语都会优先使用该提供商。",
     "default": ""
   },
-  "ai_model": {
-    "description": "AI 使用的模型名称",
-    "type": "string",
-    "hint": "留空时使用所选提供商当前模型；填写后，将覆盖插件内 AI 调用所使用的模型。",
-    "default": ""
-  },
   "ai_trigger_minutes": {
     "description": "AI 触发时间（分钟）",
     "type": "int",
