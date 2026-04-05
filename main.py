@@ -94,11 +94,6 @@ class MyPlugin(Star):
 
         message_type = event.get_message_type()
         if message_type == MessageType.FRIEND_MESSAGE:
-            if self._looks_like_command(text):
-                return
-            result = await self._handle_private_away_message(event, text)
-            if result:
-                yield result
             return
         if message_type != MessageType.GROUP_MESSAGE:
             return
