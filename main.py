@@ -88,10 +88,6 @@ class MyPlugin(Star):
 
     @filter.platform_adapter_type(filter.PlatformAdapterType.ALL)
     async def on_message(self, event: AstrMessageEvent):
-        text = self._extract_plain_text(event)
-        if not text:
-            return
-
         message_type = event.get_message_type()
         if message_type == MessageType.FRIEND_MESSAGE:
             return
@@ -105,6 +101,7 @@ class MyPlugin(Star):
             return
 
         sender_name = event.get_sender_name().strip() or sender_id
+        text = self._extract_plain_text(event)
         message_id = str(getattr(event.message_obj, "message_id", "") or "").strip()
         raw_ts = getattr(event.message_obj, "timestamp", 0)
         try:
@@ -148,7 +145,7 @@ class MyPlugin(Star):
                         )
                     )
 
-            if self._detect_mode() in {"ai", "both"}:
+            if text and self._detect_mode() in {"ai", "both"}:
                 pending = self._pending_by_session.setdefault(session_key, [])
                 pending.append(
                     PendingTextMessage(
@@ -180,7 +177,7 @@ class MyPlugin(Star):
             )
             return
 
-        if self._detect_mode() in {"regex", "both"}:
+        if text and self._detect_mode() in {"regex", "both"}:
             reason = self._extract_reason_by_regex(text)
             if reason:
                 async with self._lock:
@@ -864,7 +861,11 @@ class MyPlugin(Star):
             "\n2. 语气友好，控制在 1-2 句。"
             "\n3. 必须包含用户昵称、离开原因和离开时长。"
             "\n4. 如果有留言，自然带上；如果没有，不要编造。"
-            "\n5. 不要添加多余解释、标题或引号。"
+            "\n5. 不要添加多余解释或标题。"
+            "\n6. 如果离开原因是正常日常事项，如吃饭、洗澡、上厕所、接电话、取外卖、忙一下，直接自然表达，不要加引号。"
+            '\n7. 如果离开原因明显不属于正常日常事项，或带有玩笑、抽象、夸张、整活、离谱意味，如“去拯救世界”“被外星人抓走”“渡劫”“去当龙王”，请把该原因用中文引号括起来。'
+            "\n8. 遇到这类非正常离开原因时，整体语气要像日常群聊里的接话，轻松自然、略带调侃感，但不要阴阳怪气、不要冒犯、不刻意玩梗。"
+            "\n9. 无论是否为非正常原因，都要像真人在群里接话，不要写成通知、播报或客服话术。"
             f"\n\n用户昵称：{record.sender_name}"
             f"\n离开原因：{record.reason}"
             f"\n离开时长：{duration}"
