@@ -1,4 +1,4 @@
-name: counton
+name: astrbot_plugin_counton
 display_name: CountOn
 desc: 提供了群聊中为离开的人计时的功能，并在其暂时离开期间帮助其回复收到的@消息
 version: v0.1.2
